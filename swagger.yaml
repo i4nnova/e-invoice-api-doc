@@ -1,60 +1,205 @@
 openapi: 3.0.3
 info:
   title: i4nvoice API
-  version: 3.0.0
+  version: 4.0.0
   description: |
     # i4nvoice API Documentation
-    
-    Multi-tenant invoice management system with FIRS-compliant Invoice Reference Number (IRN) generation.
-    
-    ## Authentication
-    
-    Uses JWT (JSON Web Tokens) with HMAC-SHA256 signatures.
-    
-    **To authenticate:**
-    1. POST /api/auth/login with credentials
-    2. Extract token from response
-    3. Include in requests: `Authorization: Bearer {token}`
-    
-    **Token lifetime:** 24 hours (configurable)
-    
-    ## Multi-Tenant Architecture
-    
-    Each company operates in an isolated PostgreSQL schema ensuring complete data separation.
-    
+
+    ## ERP Integration Guide
+
+    This guide documents the recommended production flow for integrating an ERP with i4nvoice.
+
+    ### 1) Provision Integration Credentials
+
+    From **Settings -> Developer Options** in the web app:
+
+    1. Copy your ERP endpoint: `/api/erp/{companyId}/invoices`
+    2. Generate an API credential pair (`api_key`, `secret`)
+    3. Store the secret securely (it is shown once)
+
+    ### 2) Sign ERP Requests (HMAC)
+
+    Every ERP POST to `/api/erp/{companyId}/invoices` must include:
+
+    | Header | Value |
+    |---|---|
+    | `X-Api-Key` | API key from Developer Options |
+    | `X-Timestamp` | Unix epoch seconds |
+    | `X-Nonce` | Unique request nonce (UUID recommended) |
+    | `X-Signature` | HMAC-SHA256 hex digest |
+
+    Signature formula:
+
+    ```
+    signature = HMAC_SHA256(secret, "{timestamp}.{raw_json_body}")
+    ```
+
+    Important:
+    - Sign the exact same raw JSON string sent in the HTTP body.
+    - Nonce must be unique per request.
+    - Timestamp outside allowed skew is rejected.
+
+    ### 3) Post Invoice from ERP
+
+    Use `POST /api/erp/{companyId}/invoices`.
+
+    ### Credit Note Rule (Explicit)
+
+    If your invoice resolves to **Credit Note** (`invoice_type_code = "380"`), then you must provide:
+    - `originator_document_reference` as an array, where at least one element has a non-empty `irn`
+    - Example: `originator_document_reference: [{ irn: "INV2025007-D0164F59-20251215", issue_date: "2025-12-15" }]`
+
+    Requests without this field are rejected with validation error.
+
+    ### ERP Payload Field Guide (Mappings-Aligned)
+
+    This list mirrors the same canonical field IDs shown in **Settings -> Mappings** so ERP integrators can see the full set of supported fields, including required/optional behavior.
+
+    - `invoice_number` — **Required** — Example: `INV2026001`
+    - `issue_date` — **Required** — Example: `2026-03-19`
+    - `due_date` — **Optional** — Example: `2026-04-18`
+    - `invoice_type_code` — **Optional** — Example: `381`
+    - `invoice_kind` — **Optional** — Example: `B2B`
+    - `document_currency_code` — **Required** — Example: `NGN`
+    - `tax_currency_code` — **Required** — Example: `NGN`
+    - `payment_status` — **Optional** — Example: `pending`
+    - `note` — **Optional** — Example: `Payment due in 30 days`
+    - `tax_point_date` — **Optional** — Example: `2026-03-19`
+    - `accounting_cost` — **Optional** — Example: `COST-CENTER-01`
+    - `buyer_reference` — **Optional** — Example: `PO-000221`
+    - `order_reference` — **Optional** — Example: `SO-000221`
+    - `actual_delivery_date` — **Optional** — Example: `2026-03-20`
+    - `payment_terms_note` — **Optional** — Example: `Net 30 days`
+    - `invoice_delivery_period.start_date` — **Optional** — Example: `2026-03-01`
+    - `invoice_delivery_period.end_date` — **Optional** — Example: `2026-03-31`
+    - `billing_reference.irn` — **Optional** — Example: `INV2025003-D0164F59-20251201`
+    - `billing_reference.issue_date` — **Optional** — Example: `2025-12-01`
+    - `originator_document_reference.irn` — **Optional** — Example: `INV2025007-D0164F59-20251215`
+    - `originator_document_reference.issue_date` — **Optional** — Example: `2025-12-15`
+    - `dispatch_document_reference.irn` — **Optional** — Example: `DSP2026001-D0164F59-20260318`
+    - `receipt_document_reference.irn` — **Optional** — Example: `RCV2026001-D0164F59-20260320`
+    - `contract_document_reference.irn` — **Optional** — Example: `CTR2026001-D0164F59-20260101`
+    - `additional_document_reference.irn` — **Optional** — Example: `ADD2026001-D0164F59-20260310`
+    - `tax_total.tax_amount` — **Optional** — Example: `7500`
+    - `tax_total.tax_subtotal.taxable_amount` — **Optional** — Example: `50000`
+    - `tax_total.tax_subtotal.tax_amount` — **Optional** — Example: `7500`
+    - `tax_total.tax_subtotal.tax_category.id` — **Optional** — Example: `VAT`
+    - `tax_total.tax_subtotal.tax_category.percent` — **Optional** — Example: `7.5`
+    - `legal_monetary_total.line_extension_amount` — **Required** — Example: `50000`
+    - `legal_monetary_total.tax_exclusive_amount` — **Required** — Example: `50000`
+    - `legal_monetary_total.tax_inclusive_amount` — **Required** — Example: `57500`
+    - `legal_monetary_total.payable_amount` — **Required** — Example: `57500`
+    - `invoice_line.hsn_code` — **Optional** — Example: `8471.30`
+    - `invoice_line.product_category` — **Optional** — Example: `COMPUTER`
+    - `invoice_line.isic_code` — **Optional** — Example: `6201`
+    - `invoice_line.service_category` — **Optional** — Example: `CONSULTING`
+    - `invoice_line.discount_rate` — **Optional** — Example: `5`
+    - `invoice_line.discount_amount` — **Optional** — Example: `2500`
+    - `invoice_line.fee_rate` — **Optional** — Example: `1`
+    - `invoice_line.fee_amount` — **Optional** — Example: `500`
+    - `invoice_line.invoiced_quantity` — **Required** — Example: `10`
+    - `invoice_line.line_extension_amount` — **Required** — Example: `50000`
+    - `invoice_line.item.name` — **Required** — Example: `Laptop Computer`
+    - `invoice_line.item.description` — **Optional** — Example: `Core i7, 16GB RAM`
+    - `invoice_line.item.sellers_item_identification` — **Optional** — Example: `SKU-LAP-001`
+    - `invoice_line.price.price_amount` — **Required** — Example: `5000`
+    - `invoice_line.price.base_quantity` — **Required** — Example: `1`
+    - `invoice_line.price.price_unit` — **Required** — Example: `EA`
+    - `accounting_supplier_party.party_name` — **Required** — Example: `Acme Corp Ltd`
+    - `accounting_supplier_party.tin` — **Required** — Example: `12345678-0001`
+    - `accounting_supplier_party.email` — **Optional** — Example: `billing@acme.com`
+    - `accounting_supplier_party.telephone` — **Optional** — Example: `+2348012345678`
+    - `accounting_supplier_party.business_description` — **Optional** — Example: `Electronics supplier`
+    - `accounting_supplier_party.postal_address.street_name` — **Optional** — Example: `12 Marina Street`
+    - `accounting_supplier_party.postal_address.city_name` — **Optional** — Example: `Lagos`
+    - `accounting_supplier_party.postal_address.postal_zone` — **Optional** — Example: `100001`
+    - `accounting_supplier_party.postal_address.lga` — **Optional** — Example: `NG-LA-IKE`
+    - `accounting_supplier_party.postal_address.state` — **Optional** — Example: `NG-LA`
+    - `accounting_supplier_party.postal_address.country` — **Optional** — Example: `NG`
+    - `accounting_customer_party.party_name` — **Optional** — Example: `Buyer Company Ltd`
+    - `accounting_customer_party.tin` — **Optional** — Example: `98765432-0001`
+    - `accounting_customer_party.email` — **Optional** — Example: `buyer@example.com`
+    - `accounting_customer_party.telephone` — **Optional** — Example: `+2348098765432`
+    - `accounting_customer_party.business_description` — **Optional** — Example: `Retail buyer`
+    - `accounting_customer_party.postal_address.street_name` — **Optional** — Example: `5 Broad Street`
+    - `accounting_customer_party.postal_address.city_name` — **Optional** — Example: `Abuja`
+    - `accounting_customer_party.postal_address.postal_zone` — **Optional** — Example: `900001`
+    - `accounting_customer_party.postal_address.lga` — **Optional** — Example: `NG-FC-ABJ`
+    - `accounting_customer_party.postal_address.state` — **Optional** — Example: `NG-FC`
+    - `accounting_customer_party.postal_address.country` — **Optional** — Example: `NG`
+    - `payment_means.payment_means_code` — **Optional** — Example: `30`
+    - `payment_means.payment_due_date` — **Optional** — Example: `2026-04-18`
+    - `allowance_charge.charge_indicator` — **Optional** — Example: `false`
+    - `allowance_charge.amount` — **Optional** — Example: `1000`
+
+    Key behavior:
+    - `irn` is generated by middleware (do not send manually unless your flow explicitly requires it)
+    - payload is validated and normalized
+    - invoice is saved in company scope
+    - if an IRN already exists, current invoice is updated and previous version is snapshotted
+
+    ### 4) Internal Invoice Processing (Handled by Middleware)
+
+    User flow from dashboard:
+    1. Review invoices in **All Invoices**
+    2. Approve / Submit
+    3. Middleware processes approved invoices sequentially
+
+    ### 5) Mark Paid
+
+    After invoices are processed externally, users can mark them as paid.
+
+    Processing rule:
+    - selected invoices are processed sequentially
+    - local invoice status updates to `paid` only when the external update succeeds
+
+    ### 6) Recommended End-to-End Sequence
+
+    ```
+    ERP -> POST /api/erp/{companyId}/invoices
+    Middleware -> stores invoice as draft/in-approval flow
+    User -> approve/submit
+    Middleware -> external submission and local status updates
+    User -> mark paid
+    Middleware -> local status = paid
+    ```
+
     ## Permissions
-    
-    - **view**: Read access to invoices and reports
-    - **submit**: Create and submit invoices
-    - **approve**: Approve invoices and submit to NRS
 
+    | Permission | Typical capability |
+    |---|---|
+    | `view` | View invoices, stats, reports |
+    | `submit` | Create/upload invoices |
+    | `approve` | Approve invoices and trigger middleware processing |
+
+    ## Common Error Categories
+
+    | HTTP | Meaning |
+    |---|---|
+    | 400 | Validation or business rule error |
+    | 401 | Missing/invalid auth or signature |
+    | 403 | Permission denied |
+    | 404 | Resource not found |
+    | 409 | Conflict (e.g., duplicate current IRN) |
+    | 5xx | Server / dependency failure |
 servers:
-  - url: http://localhost:4000
-    description: Development server
-  - url: https://api.i4nvoice.com
-    description: Production server
-
+  - url: /
 tags:
+  - name: ERP Integration
   - name: Authentication
-    description: User authentication and authorization
   - name: Invoices
-    description: Invoice management operations
+  - name: Company
+  - name: Mappings
   - name: Reports
-    description: Reporting and analytics
   - name: Settings
-    description: System configuration
-
+  - name: Users
 components:
   securitySchemes:
     BearerAuth:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: |
-        JWT authentication token. Include in header: `Authorization: Bearer <token>`
-        
-        Obtain token from POST /api/auth/login
-
+      description: "JWT token obtained from POST /api/auth/login. Include as `Authorization: Bearer <token>`"
   schemas:
     ApiSuccess:
       type: object
@@ -64,31 +209,28 @@ components:
           example: true
         message:
           type: string
-          example: Operation successful
         data:
           type: object
           nullable: true
         meta:
           type: object
           nullable: true
-
     ApiError:
       type: object
       properties:
         success:
           type: boolean
           example: false
+        code:
+          type: string
+          example: VALIDATION_ERROR
         message:
           type: string
-          example: Error message
         error:
-          type: object
-          properties:
-            code:
-              type: string
-            details:
-              nullable: true
-
+          type: string
+          nullable: true
+        details:
+          nullable: true
     User:
       type: object
       properties:
@@ -113,7 +255,6 @@ components:
         created_at:
           type: string
           format: date-time
-
     Invoice:
       type: object
       properties:
@@ -121,7 +262,7 @@ components:
           type: integer
         irn:
           type: string
-          description: FIRS-compliant Invoice Reference Number
+          description: "FIRS IRN: [InvoiceNumber]-[ServiceID]-[YYYYMMDD]"
         issue_date:
           type: string
           format: date
@@ -132,6 +273,10 @@ components:
         status:
           type: string
           enum: [draft, in-approval, sent, paid, failed]
+        payment_status:
+          type: string
+          description: "Payment status: unpaid, pending, paid, or rejected (legacy PAID/PENDING accepted). Invalid or missing values are stored as pending. Separate from submission workflow status."
+          example: pending
         business_name:
           type: string
         payable_amount:
@@ -147,40 +292,34 @@ components:
           type: string
           format: date-time
           nullable: true
-
-    InvoiceCreate:
+    InvoicePayload:
       type: object
       required:
+        - invoice_number
         - issue_date
         - document_currency_code
         - tax_currency_code
         - accounting_supplier_party
-        - accounting_customer_party
-        - invoice_line
         - legal_monetary_total
+        - invoice_line
       properties:
-        business_id:
-          type: string
-          format: uuid
-          description: Optional. Auto-selected if not provided
-        irn:
-          type: string
-          description: FIRS IRN format [InvoiceNumber]-[ServiceID]-[Timestamp]
-          example: INV001-94ND90NR-20240611
         invoice_number:
           type: string
-          description: Alphanumeric only. System generates IRN if provided
-          example: INV001
+          description: Alphanumeric only - no hyphens, underscores or special characters. IRN is generated from this automatically.
+          example: INV2026001
         issue_date:
           type: string
           format: date
+          example: 2026-03-19
         due_date:
           type: string
           format: date
-        status:
+          nullable: true
+        invoice_type_code:
           type: string
-          enum: [draft, in-approval]
-          default: draft
+          example: "380"
+          nullable: true
+          description: NRS invoice type code. When this resolves to `380` (Credit Note), send originator_document_reference as an array and include at least one element with a non-empty irn.
         document_currency_code:
           type: string
           example: NGN
@@ -189,418 +328,471 @@ components:
           example: NGN
         note:
           type: string
+          nullable: true
+        status:
+          type: string
+          enum: [draft, in-approval]
+          default: draft
+        payment_status:
+          type: string
+          description: "Payment state: unpaid, pending, paid, or rejected (legacy PAID/PENDING accepted on ingest). Invalid or missing values are stored as pending. Separate from workflow status."
+          example: pending
+          nullable: true
+        business_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Auto-selected if omitted
+        tax_point_date:
+          type: string
+          format: date
+          nullable: true
+        accounting_cost:
+          type: string
+          nullable: true
+        buyer_reference:
+          type: string
+          nullable: true
+        order_reference:
+          type: string
+          nullable: true
+        actual_delivery_date:
+          type: string
+          format: date
+          nullable: true
+        payment_terms_note:
+          type: string
+          nullable: true
         accounting_supplier_party:
-          $ref: '#/components/schemas/Party'
+          type: object
+          required: [party_name, tin]
+          properties:
+            party_name:
+              type: string
+              example: Acme Corp Ltd
+            tin:
+              type: string
+              example: 12345678-0001
+              description: Used as unique key - upserted on conflict
+            email:
+              type: string
+              nullable: true
+            telephone:
+              type: string
+              nullable: true
+            business_description:
+              type: string
+              nullable: true
+            postal_address:
+              type: object
+              nullable: true
+              properties:
+                street_name:
+                  type: string
+                city_name:
+                  type: string
+                postal_zone:
+                  type: string
+                country:
+                  type: string
+                  example: NG
+                  description: ISO 3166-1 alpha-2
         accounting_customer_party:
-          $ref: '#/components/schemas/Party'
+          type: object
+          nullable: true
+          description: "Optional on the invoice. Validation is conditional by invoice_kind: for B2B/default (including B2G), when present, party_name, tin, email, and postal_address are required (postal_address must include street_name, city_name, postal_zone, lga, state, and country); for B2C, minimal buyer fields are required when present: party_name, email, and telephone. For B2C, missing tin/postal_address are auto-populated with system defaults before NRS validation and storage."
+          required: [party_name, tin, email, postal_address]
+          properties:
+            party_name:
+              type: string
+              example: Buyer Company Ltd
+            tin:
+              type: string
+              example: 98765432-0001
+            email:
+              type: string
+              example: buyer@example.com
+            telephone:
+              type: string
+              nullable: true
+            business_description:
+              type: string
+              nullable: true
+            postal_address:
+              type: object
+              required: [street_name, city_name, postal_zone, lga, state, country]
+              properties:
+                street_name:
+                  type: string
+                city_name:
+                  type: string
+                postal_zone:
+                  type: string
+                lga:
+                  type: string
+                  example: NG-AB-ANO
+                state:
+                  type: string
+                  example: NG-AB
+                country:
+                  type: string
+                  example: NG
+                  description: ISO 3166-1 alpha-2
+        tax_total:
+          type: array
+          items:
+            type: object
+            required: [tax_amount]
+            properties:
+              tax_amount:
+                type: number
+                example: 7500
+              tax_subtotal:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    taxable_amount:
+                      type: number
+                      example: 50000
+                    tax_amount:
+                      type: number
+                      example: 7500
+                    tax_category:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                          example: VAT
+                        percent:
+                          type: number
+                          example: 7.5
+        legal_monetary_total:
+          type: object
+          required:
+            - line_extension_amount
+            - tax_exclusive_amount
+            - tax_inclusive_amount
+            - payable_amount
+          properties:
+            line_extension_amount:
+              type: number
+              example: 50000
+            tax_exclusive_amount:
+              type: number
+              example: 50000
+            tax_inclusive_amount:
+              type: number
+              example: 57500
+            payable_amount:
+              type: number
+              example: 57500
         invoice_line:
           type: array
           minItems: 1
           items:
-            $ref: '#/components/schemas/InvoiceLine'
-        legal_monetary_total:
-          $ref: '#/components/schemas/MonetaryTotal'
-        tax_total:
+            type: object
+            required:
+              - invoiced_quantity
+              - line_extension_amount
+              - item
+              - price
+            properties:
+              line_number:
+                type: integer
+                example: 1
+              invoiced_quantity:
+                type: number
+                example: 10
+              line_extension_amount:
+                type: number
+                example: 50000
+              hsn_code:
+                type: string
+                nullable: true
+              product_category:
+                type: string
+                nullable: true
+              isic_code:
+                type: string
+                nullable: true
+              service_category:
+                type: string
+                nullable: true
+              discount_rate:
+                type: number
+                nullable: true
+              discount_amount:
+                type: number
+                nullable: true
+              fee_rate:
+                type: number
+                nullable: true
+              fee_amount:
+                type: number
+                nullable: true
+              item:
+                type: object
+                required: [name]
+                properties:
+                  name:
+                    type: string
+                    example: Laptop Computer
+                  description:
+                    type: string
+                    nullable: true
+                  sellers_item_identification:
+                    type: string
+                    nullable: true
+                    example: SKU-LAP-001
+              price:
+                type: object
+                required: [price_amount, base_quantity, price_unit]
+                properties:
+                  price_amount:
+                    type: number
+                    example: 5000
+                  base_quantity:
+                    type: number
+                    example: 1
+                  price_unit:
+                    type: string
+                    example: NGN per 1
+        payment_means:
           type: array
-          items:
-            $ref: '#/components/schemas/TaxTotal'
-
-    Party:
-      type: object
-      required:
-        - party_name
-        - tin
-      properties:
-        party_name:
-          type: string
-        tin:
-          type: string
-        email:
-          type: string
-        telephone:
-          type: string
-        postal_address:
-          type: object
-          properties:
-            street_name:
-              type: string
-            city_name:
-              type: string
-            postal_zone:
-              type: string
-            country:
-              type: string
-
-    InvoiceLine:
-      type: object
-      required:
-        - invoiced_quantity
-        - line_extension_amount
-        - item
-        - price
-      properties:
-        line_number:
-          type: integer
-        invoiced_quantity:
-          type: number
-        line_extension_amount:
-          type: number
-        hsn_code:
-          type: string
-        product_category:
-          type: string
-        discount_rate:
-          type: number
-        discount_amount:
-          type: number
-        item:
-          type: object
-          required:
-            - name
-          properties:
-            name:
-              type: string
-            description:
-              type: string
-        price:
-          type: object
-          required:
-            - price_amount
-          properties:
-            price_amount:
-              type: number
-            base_quantity:
-              type: number
-            price_unit:
-              type: string
-
-    MonetaryTotal:
-      type: object
-      required:
-        - line_extension_amount
-        - tax_exclusive_amount
-        - tax_inclusive_amount
-        - payable_amount
-      properties:
-        line_extension_amount:
-          type: number
-        tax_exclusive_amount:
-          type: number
-        tax_inclusive_amount:
-          type: number
-        payable_amount:
-          type: number
-
-    TaxTotal:
-      type: object
-      properties:
-        tax_amount:
-          type: number
-        tax_subtotal:
-          type: array
+          nullable: true
           items:
             type: object
             properties:
-              taxable_amount:
+              payment_means_code:
+                type: string
+                example: "30"
+              payment_due_date:
+                type: string
+                format: date
+                nullable: true
+        allowance_charge:
+          type: array
+          nullable: true
+          items:
+            type: object
+            properties:
+              charge_indicator:
+                type: boolean
+                description: false = allowance (discount), true = charge
+              amount:
                 type: number
-              tax_amount:
-                type: number
-              tax_category:
-                type: object
-                properties:
-                  id:
-                    type: string
-                  percent:
-                    type: number
-
+              reason:
+                type: string
+                nullable: true
+        invoice_delivery_period:
+          type: object
+          nullable: true
+          properties:
+            start_date:
+              type: string
+              format: date
+            end_date:
+              type: string
+              format: date
 security:
   - BearerAuth: []
-
 paths:
-  /api/auth/register:
+  /api/erp/{companyId}/verify-signature:
     post:
-      tags:
-        - Authentication
-      summary: Register new user
-      description: Creates a new user account and company schema if needed
-      security: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required:
-                - email
-                - password
-                - companyName
-              properties:
-                fullName:
-                  type: string
-                  example: John Doe
-                email:
-                  type: string
-                  format: email
-                  example: john@company.com
-                password:
-                  type: string
-                  minLength: 8
-                  example: password123
-                companyName:
-                  type: string
-                  example: Acme Corp
-      responses:
-        '201':
-          description: User registered successfully
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiSuccess'
-        '400':
-          description: Validation error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiError'
-        '409':
-          description: User already exists
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiError'
-
-  /api/auth/login:
-    post:
-      tags:
-        - Authentication
-      summary: Login
-      description: Authenticate and receive JWT token
-      security: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required:
-                - username
-                - password
-                - companyName
-              properties:
-                username:
-                  type: string
-                  example: admin
-                password:
-                  type: string
-                  example: Admin@123
-                companyName:
-                  type: string
-                  example: I4nnova
-                rememberMe:
-                  type: boolean
-                  default: false
-            example:
-              username: admin
-              password: Admin@123
-              companyName: I4nnova
-      responses:
-        '200':
-          description: Login successful
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/ApiSuccess'
-                  - type: object
-                    properties:
-                      data:
-                        type: object
-                        properties:
-                          token:
-                            type: string
-                            description: JWT token
-                          user:
-                            $ref: '#/components/schemas/User'
-        '401':
-          description: Invalid credentials
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiError'
-
-  /api/auth/verify:
-    get:
-      tags:
-        - Authentication
-      summary: Verify token
-      description: Verify if authentication token is valid
-      responses:
-        '200':
-          description: Token valid
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiSuccess'
-        '401':
-          description: Invalid token
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiError'
-
-  /api/auth/change-password:
-    post:
-      tags:
-        - Authentication
-      summary: Change password
-      description: Change current user's password
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required:
-                - currentPassword
-                - newPassword
-              properties:
-                currentPassword:
-                  type: string
-                newPassword:
-                  type: string
-                  minLength: 8
-      responses:
-        '200':
-          description: Password changed
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiSuccess'
-        '401':
-          description: Current password incorrect
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiError'
-
-  /api/invoices:
-    post:
-      tags:
-        - Invoices
-      summary: Create invoice
+      summary: Verify ERP HMAC signature
       description: |
-        Creates an invoice with FIRS-compliant IRN.
-        
-        **Authentication:** Optional
-        - With token: Uses user's company, requires 'submit' permission
-        - Without token: Defaults to I4nnova company
-        
-        **IRN Options:**
-        1. Provide `irn` field (validated)
-        2. Provide `invoice_number` (auto-generates IRN)
-      security:
-        - BearerAuth: []
-        - {}
+        Use this endpoint to test whether your ERP HMAC signing implementation is correct.
+
+        It validates:
+        - API key
+        - timestamp window
+        - signature correctness against raw body
+        - company authorization for the key
+
+        Unlike ingest, this endpoint is validation-only and does not create/update invoices.
+      tags: [ERP Integration]
+      security: []
+      parameters:
+        - name: companyId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Your company ID as used in ERP endpoint
+        - name: X-Api-Key
+          in: header
+          required: true
+          schema:
+            type: string
+        - name: X-Timestamp
+          in: header
+          required: true
+          schema:
+            type: integer
+        - name: X-Nonce
+          in: header
+          required: true
+          schema:
+            type: string
+        - name: X-Signature
+          in: header
+          required: true
+          schema:
+            type: string
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/InvoiceCreate'
-            examples:
-              minimal:
-                summary: Minimal invoice
-                value:
-                  invoice_number: INV001
-                  issue_date: '2024-06-11'
-                  document_currency_code: NGN
-                  tax_currency_code: NGN
-                  accounting_supplier_party:
-                    party_name: My Company Ltd
-                    tin: '12345678901'
-                  accounting_customer_party:
-                    party_name: Customer Company Ltd
-                    tin: '98765432109'
-                  invoice_line:
-                    - invoiced_quantity: 1
-                      line_extension_amount: 10000
-                      item:
-                        name: Professional Services
-                      price:
-                        price_amount: 10000
-                  legal_monetary_total:
-                    line_extension_amount: 10000
-                    tax_exclusive_amount: 10000
-                    tax_inclusive_amount: 11750
-                    payable_amount: 11750
+              type: object
+              additionalProperties: true
+            example:
+              ping: signature-check
       responses:
-        '201':
-          description: Invoice created successfully
+        "200":
+          description: Signature verified
           content:
             application/json:
               schema:
                 allOf:
-                  - $ref: '#/components/schemas/ApiSuccess'
+                  - $ref: "#/components/schemas/ApiSuccess"
                   - type: object
                     properties:
                       data:
                         type: object
                         properties:
-                          invoice_id:
+                          ok:
+                            type: boolean
+                            example: true
+                          company_id:
+                            type: string
+                            format: uuid
+                          credential_id:
+                            oneOf:
+                              - type: integer
+                              - type: string
+                                format: uuid
+                          raw_body_bytes:
                             type: integer
-        '400':
-          description: Validation error or missing service_id
+                            example: 28
+        "401":
+          description: Invalid/missing headers, timestamp, or signature
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ApiError'
-        '403':
-          description: Insufficient permissions
+                $ref: "#/components/schemas/ApiError"
+        "403":
+          description: API key not authorized for this company
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ApiError'
-        '409':
-          description: Duplicate IRN
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiError'
+                $ref: "#/components/schemas/ApiError"
+  /api/webhooks/invoices:
+    post:
+      summary: Receive NRS transmit event webhook
+      description: |
+        Webhook endpoint for NRS Exchange transmission lifecycle events.
 
-  /api/all-invoices:
+        Expected payload shape:
+        - `irn`: invoice IRN
+        - `message`: one of `TRANSMITTING`, `TRANSMITTED`, `ACKNOWLEDGED`, `FAILED`
+
+        This endpoint is event-driven and idempotent for duplicate notifications. It returns `200 OK` for successfully processed events.
+      tags: [ERP Integration]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [irn, message]
+              properties:
+                irn:
+                  type: string
+                  example: INV0990-088ED42R-20270920
+                message:
+                  type: string
+                  enum: [TRANSMITTING, TRANSMITTED, ACKNOWLEDGED, FAILED]
+                  example: TRANSMITTING
+            example:
+              irn: INV0990-088ED42R-20270920
+              message: TRANSMITTING
+      responses:
+        "200":
+          description: Webhook event processed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiSuccess"
+        "400":
+          description: Invalid payload (missing/invalid irn or message)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "404":
+          description: Invoice not found for supplied IRN
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "429":
+          description: Webhook rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /api/erp/{companyId}/invoices:
     get:
-      tags:
-        - Invoices
-      summary: List invoices
-      description: Get paginated list of invoices
+      summary: List invoices for a company (ERP programmatic)
+      description: |
+        Retrieve invoices for a company without user login / OTP.
+
+        **Authentication:** `X-Api-Key` only (no HMAC signature required for GET).
+
+        Use this for programmatic integrations that need to fetch invoice lists even when OTP is enabled for interactive login.
+      tags: [ERP Integration]
+      security: []
       parameters:
+        - name: companyId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Your company ID - find it in Settings -> Developer Options -> ERP Ingest Endpoint
+        - name: X-Api-Key
+          in: header
+          required: true
+          schema:
+            type: string
         - name: page
           in: query
+          required: false
           schema:
             type: integer
-            default: 1
-            minimum: 1
+            example: 1
         - name: limit
           in: query
+          required: false
           schema:
             type: integer
-            default: 20
-            minimum: 1
-            maximum: 100
+            example: 20
       responses:
-        '200':
-          description: Invoices retrieved
+        "200":
+          description: Invoices fetched
           content:
             application/json:
               schema:
                 allOf:
-                  - $ref: '#/components/schemas/ApiSuccess'
+                  - $ref: "#/components/schemas/ApiSuccess"
                   - type: object
                     properties:
                       data:
                         type: array
                         items:
-                          $ref: '#/components/schemas/Invoice'
+                          $ref: "#/components/schemas/Invoice"
                       meta:
                         type: object
                         properties:
@@ -612,13 +804,833 @@ paths:
                             type: integer
                           totalPages:
                             type: integer
+        "401":
+          description: Missing/invalid API key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "403":
+          description: API key not authorized for this company
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "404":
+          description: Company not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+    post:
+      summary: Ingest invoice from ERP
+      description: |
+        Submit an invoice from an external ERP system. This is the primary integration endpoint.
 
+        **Authentication:** HMAC-SHA256 signed request - no user login required.
+
+        Note: this endpoint does not auto-sign on behalf of ERP. Your ERP must compute and send `X-Signature`.
+
+        **Get your endpoint URL and API key from Settings -> Developer Options.**
+
+        **Required headers:**
+
+        | Header | Description |
+        |---|---|
+        | `X-Api-Key` | Your API key |
+        | `X-Timestamp` | Unix timestamp in seconds (within 300s of server time) |
+        | `X-Nonce` | Unique per-request string (UUID recommended, never reuse) |
+        | `X-Signature` | `HMAC-SHA256(secret, "{timestamp}.{body}")` as hex |
+
+        **Node.js signing:**
+
+        ```javascript
+        const hmac = crypto.createHmac('sha256', secret);
+        hmac.update(`${timestamp}.`);
+        hmac.update(bodyString);
+        const signature = hmac.digest('hex');
+        ```
+
+        **Python signing:**
+
+        ```python
+        msg = f"{timestamp}.".encode() + body.encode()
+        signature = hmac.new(secret.encode(), msg, hashlib.sha256).hexdigest()
+        ```
+
+        **IRN:** Do not send an `irn` field. The system generates it from `invoice_number` + `service_id` + `issue_date`.
+
+        **Credit Note requirement (explicit):**
+        - When `invoice_type_code` resolves to `380` (Credit Note), you must send `originator_document_reference` as an array and include at least one element with a non-empty `irn`.
+        - If missing, the API rejects the request at validation level.
+
+        **Field mapping:** In Settings -> Mappings, key mappings rename a top-level ERP JSON key to a canonical NRS field path; value mappings translate an ERP-sent code into an allowed NRS value for enum-like fields (e.g. `invoice_type_code`, `invoice_kind`, `invoice_line.hsn_code` and `invoice_line.isic_code` on each `invoice_line[]` element). Both run before normalization and storage.
+      tags: [ERP Integration]
+      security: []
+      parameters:
+        - name: companyId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Your company ID - find it in Settings -> Developer Options -> ERP Ingest Endpoint
+        - name: X-Api-Key
+          in: header
+          required: true
+          schema:
+            type: string
+        - name: X-Timestamp
+          in: header
+          required: true
+          schema:
+            type: integer
+          description: Unix epoch seconds
+        - name: X-Nonce
+          in: header
+          required: true
+          schema:
+            type: string
+          description: Unique per request - never reuse
+        - name: X-Signature
+          in: header
+          required: true
+          schema:
+            type: string
+          description: HMAC-SHA256 hex of timestamp.body
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InvoicePayload"
+            example:
+              invoice_number: INV2026001
+              issue_date: 2026-03-19
+              due_date: 2026-04-18
+              document_currency_code: NGN
+              tax_currency_code: NGN
+              accounting_supplier_party:
+                party_name: Acme Corp Ltd
+                tin: 12345678-0001
+                email: billing@acme.com
+                postal_address:
+                  street_name: 12 Marina Street
+                  city_name: Lagos
+                  postal_zone: "100001"
+                  country: NG
+              accounting_customer_party:
+                party_name: Buyer Company Ltd
+                tin: 98765432-0001
+                email: buyer@example.com
+                postal_address:
+                  street_name: 5 Broad Street
+                  city_name: Abuja
+                  postal_zone: "900001"
+                  lga: NG-FC-ABC
+                  state: NG-FC
+                  country: NG
+              tax_total:
+                - tax_amount: 7500
+                  tax_subtotal:
+                    - taxable_amount: 50000
+                      tax_amount: 7500
+                      tax_category:
+                        id: VAT
+                        percent: 7.5
+              legal_monetary_total:
+                line_extension_amount: 50000
+                tax_exclusive_amount: 50000
+                tax_inclusive_amount: 57500
+                payable_amount: 57500
+              invoice_line:
+                - line_number: 1
+                  invoiced_quantity: 10
+                  line_extension_amount: 50000
+                  item:
+                    name: Laptop Computer
+                    sellers_item_identification: SKU-LAP-001
+                  price:
+                    price_amount: 5000
+                    price_unit: EA
+      responses:
+        "201":
+          description: Invoice ingested successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiSuccess"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          invoice_id:
+                            type: integer
+                            example: 42
+        "400":
+          description: Validation error, invalid invoice_number, or service_id not configured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "401":
+          description: Missing/invalid headers, bad signature, timestamp skew, or replay detected
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "403":
+          description: API key not authorized for this company
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "409":
+          description: Duplicate IRN - invoice_number already submitted for this issue_date
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /api/erp/{companyId}/invoices/status:
+    post:
+      summary: Update invoice payment status by IRN (ERP)
+      description: |
+        Update an invoice's payment `payment_status` using its IRN, without interactive login. Workflow `status` (draft vs submitted to NRS) is not changed by this endpoint.
+
+        **Authentication:** Same HMAC-SHA256 signing as `POST /api/erp/{companyId}/invoices` (`X-Api-Key`, `X-Timestamp`, `X-Nonce`, `X-Signature` over the raw JSON body).
+
+        **Behavior:**
+        - For `payment_status: "paid"`, the server runs the same NRS sandbox update as the UI "mark paid", then sets local `payment_status` to `paid` (workflow `status` stays e.g. `sent`). The invoice must already be in `sent`, `submitted_to_nrs`, or legacy `paid` workflow.
+        - For `unpaid`, `pending`, or `rejected`, only the local `payment_status` column is updated (no NRS call).
+
+        **Allowed `payment_status` values:** `unpaid`, `pending`, `paid`, `rejected` (case-insensitive; `PAID` / `PENDING` accepted as aliases for `paid` / `pending`; invalid values fall back to `pending`).
+      tags: [ERP Integration]
+      security: []
+      parameters:
+        - name: companyId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Your company ID - same as ERP ingest endpoint
+        - name: X-Api-Key
+          in: header
+          required: true
+          schema:
+            type: string
+        - name: X-Timestamp
+          in: header
+          required: true
+          schema:
+            type: integer
+          description: Unix epoch seconds
+        - name: X-Nonce
+          in: header
+          required: true
+          schema:
+            type: string
+        - name: X-Signature
+          in: header
+          required: true
+          schema:
+            type: string
+          description: HMAC-SHA256 hex of timestamp.body
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [irn, payment_status]
+              properties:
+                irn:
+                  type: string
+                  description: Invoice Reference Number (FIRS IRN)
+                payment_status:
+                  type: string
+                  description: Target payment status (case-insensitive)
+                  example: paid
+                  enum: [unpaid, pending, paid, rejected, PAID, PENDING]
+                reference:
+                  type: string
+                  nullable: true
+                  description: Optional reference forwarded to NRS when marking paid
+            example:
+              irn: INV2026001-D0164F59-20260319
+              payment_status: paid
+              reference: ERP-PAY-991
+      responses:
+        "200":
+          description: Payment status updated (or already paid)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiSuccess"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          invoice_id:
+                            type: integer
+                          irn:
+                            type: string
+                          status:
+                            type: string
+                          payment_status:
+                            type: string
+                            nullable: true
+                          updated_at:
+                            type: string
+                            format: date-time
+                            nullable: true
+        "400":
+          description: Missing/invalid irn or payment_status, invalid payment_status value, or invoice not eligible for paid update
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "401":
+          description: Missing/invalid HMAC headers or signature
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "403":
+          description: API key not authorized for this company
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "404":
+          description: Company or invoice (IRN) not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "502":
+          description: NRS paid update failed (when payment_status is paid)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /api/erp/{companyId}/invoices/{id}:
+    get:
+      summary: Fetch invoice details by ID (ERP programmatic)
+      description: |
+        Retrieve a single invoice (full details) for a company without user login / OTP.
+
+        **Authentication:** `X-Api-Key` only (no HMAC signature required for GET).
+      tags: [ERP Integration]
+      security: []
+      parameters:
+        - name: companyId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: X-Api-Key
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Invoice fetched
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiSuccess"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+        "400":
+          description: Invalid invoice ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "401":
+          description: Missing/invalid API key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "403":
+          description: API key not authorized for this company
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "404":
+          description: Company or invoice not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /api/auth/register:
+    post:
+      summary: Register new user
+      description: Creates a new user account in inactive state, sends an email verification link, and provisions company records if needed. The account can only log in after email verification.
+      tags: [Authentication]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, companyName]
+              properties:
+                fullName:
+                  type: string
+                  example: John Doe
+                email:
+                  type: string
+                  format: email
+                  example: john@company.com
+                password:
+                  type: string
+                  minLength: 12
+                  example: Admin@123456
+                companyName:
+                  type: string
+                  example: Acme Corp
+      responses:
+        "201":
+          description: User registered and verification email sent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiSuccess"
+              example:
+                success: true
+                message: Registration successful. Please verify your email before signing in.
+                data:
+                  user_id: 0f6ef3d6-9e5e-4f99-81dc-70179f7579bb
+                  email: john@company.com
+                  is_active: false
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "409":
+          description: User already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "429":
+          description: Too many registration attempts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /api/auth/register-full:
+    post:
+      summary: Register new user (full onboarding alias)
+      description: Temporary onboarding alias for register. Current behavior matches `/api/auth/register`.
+      tags: [Authentication]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, companyName]
+              properties:
+                fullName:
+                  type: string
+                  example: John Doe
+                email:
+                  type: string
+                  format: email
+                  example: john@company.com
+                password:
+                  type: string
+                  minLength: 12
+                  example: Admin@123456
+                companyName:
+                  type: string
+                  example: Acme Corp
+      responses:
+        "201":
+          description: User registered and verification email sent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiSuccess"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "409":
+          description: User already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "429":
+          description: Too many registration attempts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /api/auth/company/resolve/{companyId}:
+    get:
+      summary: Resolve company for login
+      description: Resolves a public company ID to company display details for the login flow. Protected by IP-based public input rate limiting.
+      tags: [Authentication]
+      security: []
+      parameters:
+        - name: companyId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Public company ID shown to end users during login
+      responses:
+        "200":
+          description: Company resolved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiSuccess"
+        "404":
+          description: Company not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "429":
+          description: Too many company lookup attempts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /api/auth/login:
+    post:
+      summary: Login
+      description: Authenticate with username/email, password, and company context. Returns OTP challenge when OTP is enabled. Returns EMAIL_NOT_VERIFIED if credentials are valid but account is not yet verified. Protected by both public IP throttling and login-specific account/IP lockout logic.
+      tags: [Authentication]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password, companyName]
+              properties:
+                username:
+                  type: string
+                  description: Username or email
+                  example: admin
+                password:
+                  type: string
+                  example: Admin@123
+                companyName:
+                  type: string
+                  example: I4nnova
+      responses:
+        "200":
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiSuccess"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          token:
+                            type: string
+                          user:
+                            $ref: "#/components/schemas/User"
+        "401":
+          description: Invalid credentials or company context
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "403":
+          description: Email not verified
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+              example:
+                success: false
+                code: EMAIL_NOT_VERIFIED
+                message: Email not verified. A verification email has been sent to your email address.
+        "429":
+          description: Too many authentication attempts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /api/auth/verify-email/validate:
+    get:
+      summary: Validate email verification token
+      description: Pre-validates an email verification token without consuming activation state. Useful for frontend checks before final submit.
+      tags: [Authentication]
+      security: []
+      parameters:
+        - name: token
+          in: query
+          required: true
+          schema:
+            type: string
+          description: JWT verification token from email link
+      responses:
+        "200":
+          description: Token is valid
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiSuccess"
+              example:
+                success: true
+                message: Token valid
+                data:
+                  valid: true
+        "400":
+          description: Missing/invalid/expired token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "429":
+          description: Too many token validation attempts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /api/auth/verify-email:
+    post:
+      summary: Verify email and activate account
+      description: Consumes the email verification token/challenge and activates the user account (`is_active = true`, `email_verified_at` set).
+      tags: [Authentication]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+                  description: JWT verification token from email link
+            example:
+              token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+      responses:
+        "200":
+          description: Email verified and account activated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiSuccess"
+        "400":
+          description: Invalid/expired/consumed token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "429":
+          description: Too many token validation attempts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /api/auth/verify-email/resend:
+    post:
+      summary: Resend email verification link
+      description: Resends a verification email for accounts that are registered but not yet verified.
+      tags: [Authentication]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, companyId]
+              properties:
+                username:
+                  type: string
+                  description: Username or email used at login
+                companyId:
+                  type: string
+                  description: Company ID context for the account
+            example:
+              username: admin@company.com
+              companyId: CMP-000123
+      responses:
+        "200":
+          description: Verification resend accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiSuccess"
+              example:
+                success: true
+                message: If your account is pending verification, a new verification email has been sent.
+                data:
+                  queued: true
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "429":
+          description: Too many recovery attempts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /api/auth/verify:
+    get:
+      summary: Verify token
+      description: Check if the current JWT token is valid.
+      tags: [Authentication]
+      responses:
+        "200":
+          description: Token valid
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiSuccess"
+        "401":
+          description: Invalid or expired token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /api/auth/change-password:
+    post:
+      summary: Change password
+      tags: [Authentication]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword:
+                  type: string
+                newPassword:
+                  type: string
+                  minLength: 8
+      responses:
+        "200":
+          description: Password changed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiSuccess"
+        "401":
+          description: Current password incorrect
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /api/all-invoices:
+    get:
+      summary: List invoices
+      description: Get paginated list of invoices for the authenticated user's company.
+      tags: [Invoices]
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+      responses:
+        "200":
+          description: Invoices retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiSuccess"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Invoice"
+                      meta:
+                        type: object
+                        properties:
+                          page:
+                            type: integer
+                          limit:
+                            type: integer
+                          total:
+                            type: integer
+                          totalPages:
+                            type: integer
+  /api/received-invoices:
+    get:
+      summary: List received invoices (buyer perspective)
+      description: Invoices in this tenant where the customer party TIN matches a registered business TIN for the company and the supplier is a different party.
+      tags: [Invoices]
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+        - name: search
+          in: query
+          schema:
+            type: string
+          description: Filter by IRN or supplier name (ILIKE)
+      responses:
+        "200":
+          description: Received invoices retrieved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiSuccess"
   /api/invoice/{id}:
     get:
-      tags:
-        - Invoices
       summary: Get invoice by ID
-      description: Get detailed invoice information
+      description: Get full invoice detail including line items, parties, tax totals, and monetary totals.
+      tags: [Invoices]
       parameters:
         - name: id
           in: path
@@ -626,33 +1638,80 @@ paths:
           schema:
             type: integer
       responses:
-        '200':
+        "200":
           description: Invoice retrieved
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ApiSuccess'
-        '404':
+                $ref: "#/components/schemas/ApiSuccess"
+        "404":
           description: Invoice not found
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ApiError'
-
+                $ref: "#/components/schemas/ApiError"
+  /api/invoice/{id}/versions:
+    get:
+      summary: List invoice versions by ID
+      description: Returns historical versions for an invoice.
+      tags: [Invoices]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Invoice versions retrieved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiSuccess"
+        "404":
+          description: Invoice not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /api/invoice/{id}/pdf:
+    get:
+      summary: Get invoice PDF by ID
+      description: Generates and returns a PDF representation of the invoice.
+      tags: [Invoices]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: PDF file
+          content:
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+        "404":
+          description: Invoice not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
   /api/invoices/stats:
     get:
-      tags:
-        - Invoices
       summary: Get invoice statistics
-      description: Get aggregated invoice statistics
+      description: KPI summary for the authenticated user's company - totals, counts by status, payable amounts.
+      tags: [Invoices]
       responses:
-        '200':
+        "200":
           description: Statistics retrieved
           content:
             application/json:
               schema:
                 allOf:
-                  - $ref: '#/components/schemas/ApiSuccess'
+                  - $ref: "#/components/schemas/ApiSuccess"
                   - type: object
                     properties:
                       data:
@@ -672,229 +1731,500 @@ paths:
                             type: integer
                           failed_count:
                             type: integer
-
-  /api/invoices/submit-to-nrs:
-    post:
-      tags:
-        - Invoices
-      summary: Submit invoices to NRS
-      description: Submit approved invoices to National Revenue Service
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required:
-                - invoice_ids
-              properties:
-                invoice_ids:
-                  type: array
-                  minItems: 1
-                  items:
-                    type: integer
-      responses:
-        '200':
-          description: Invoices submitted
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiSuccess'
-        '400':
-          description: Already submitted or invalid
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiError'
-
   /api/invoices/in-approval:
     get:
-      tags:
-        - Invoices
       summary: Get invoices in approval
-      description: Get invoices awaiting approval
+      description: List invoices currently pending approval.
+      tags: [Invoices]
       responses:
-        '200':
+        "200":
           description: Invoices retrieved
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ApiSuccess'
-
+                $ref: "#/components/schemas/ApiSuccess"
   /api/invoices/approve:
     post:
-      tags:
-        - Invoices
       summary: Approve invoices
-      description: Approve invoices for submission
+      description: Approve one or more invoices in `in-approval` status. Requires `approve` permission. Automatically triggers external submission handled by middleware.
+      tags: [Invoices]
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required:
-                - invoice_ids
+              required: [invoice_ids]
               properties:
                 invoice_ids:
                   type: array
-                  minItems: 1
                   items:
                     type: integer
+                  example: [1, 2, 3]
       responses:
-        '200':
+        "200":
           description: Invoices approved
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ApiSuccess'
-        '403':
+                $ref: "#/components/schemas/ApiSuccess"
+        "403":
           description: Insufficient permissions
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ApiError'
-
+                $ref: "#/components/schemas/ApiError"
   /api/invoices/failed:
     get:
-      tags:
-        - Invoices
       summary: Get failed invoices
-      description: Get invoices that failed submission
+      description: List invoices that failed external submission, including the failure reason.
+      tags: [Invoices]
       responses:
-        '200':
+        "200":
           description: Failed invoices retrieved
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ApiSuccess'
-
+                $ref: "#/components/schemas/ApiSuccess"
   /api/invoices/retry:
     post:
-      tags:
-        - Invoices
       summary: Retry failed invoice
-      description: Reset failed invoice for retry
+      description: Reset a failed invoice back to `in-approval` status so it can be approved and resubmitted. Requires `submit` permission.
+      tags: [Invoices]
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required:
-                - invoice_id
+              required: [invoice_id]
               properties:
                 invoice_id:
                   type: integer
       responses:
-        '200':
+        "200":
           description: Invoice reset for retry
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ApiSuccess'
-        '404':
+                $ref: "#/components/schemas/ApiSuccess"
+        "404":
           description: Invoice not found
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ApiError'
-
+                $ref: "#/components/schemas/ApiError"
   /api/invoices/upload-excel:
     post:
-      tags:
-        - Invoices
-      summary: Upload invoices via Excel
-      description: Bulk upload invoices from Excel file
+      summary: Bulk upload invoices via Excel
+      description: Upload an Excel file to create multiple invoices at once. All invoices default to `draft` status. Requires `submit` permission.
+      tags: [Invoices]
       requestBody:
         required: true
         content:
           multipart/form-data:
             schema:
               type: object
-              required:
-                - file
+              required: [file]
               properties:
                 file:
                   type: string
                   format: binary
-                  description: Excel file (.xlsx)
+                  description: .xlsx file
       responses:
-        '200':
-          description: Excel file processed
+        "200":
+          description: Upload processed
           content:
             application/json:
               schema:
-                allOf:
-                  - $ref: '#/components/schemas/ApiSuccess'
-                  - type: object
-                    properties:
-                      data:
-                        type: object
-                        properties:
-                          successCount:
-                            type: integer
-                          errors:
-                            type: array
-                            items:
-                              type: object
-                              properties:
-                                row:
-                                  type: integer
-                                message:
-                                  type: string
-        '400':
+                $ref: "#/components/schemas/ApiSuccess"
+        "400":
           description: Invalid file or format
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ApiError'
-
+                $ref: "#/components/schemas/ApiError"
   /api/invoices/template:
     get:
-      tags:
-        - Invoices
       summary: Download Excel template
-      description: Download invoice upload template
+      description: Download the Excel template for bulk invoice upload.
+      tags: [Invoices]
       responses:
-        '200':
+        "200":
           description: Template file
           content:
             application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
               schema:
                 type: string
                 format: binary
-
-  /api/settings:
-    get:
-      tags:
-        - Settings
-      summary: Get settings
-      description: Get company workflow settings
+  /api/invoices/mark-paid:
+    post:
+      summary: Mark multiple invoices as paid
+      description: Marks selected invoices as paid in a single operation.
+      tags: [Invoices]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [invoice_ids]
+              properties:
+                invoice_ids:
+                  type: array
+                  items:
+                    type: integer
+                  example: [1, 2]
+                reference:
+                  type: string
+                  nullable: true
+                  example: ERP-PAY-991
       responses:
-        '200':
-          description: Settings retrieved
+        "200":
+          description: Invoices marked as paid
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiSuccess"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /api/invoice/{id}/mark-paid:
+    patch:
+      summary: Mark single invoice as paid
+      description: Marks one invoice as paid by ID.
+      tags: [Invoices]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Invoice marked as paid
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiSuccess"
+        "404":
+          description: Invoice not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /api/company/me:
+    get:
+      summary: Get my company
+      description: Returns the authenticated user's company details including company ID, slug, and external-provider login status.
+      tags: [Company]
+      responses:
+        "200":
+          description: Company fetched
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiSuccess"
+  /api/company/nrs-login:
+    put:
+      summary: Update company NRS login status
+      description: Updates NRS login linkage metadata for the authenticated company.
+      tags: [Company]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [is_logged_in]
+              properties:
+                is_logged_in:
+                  type: boolean
+                nrs_business_id:
+                  type: string
+                  nullable: true
+      responses:
+        "200":
+          description: NRS login state updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiSuccess"
+        "400":
+          description: Invalid payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /api/company/resolve/{companyId}:
+    get:
+      summary: Resolve company by ID
+      description: Authenticated endpoint with object-level access control. Resolves only the requesting user's own company.
+      tags: [Company]
+      parameters:
+        - name: companyId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Company resolved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiSuccess"
+        "403":
+          description: Forbidden for non-owned company
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "404":
+          description: Company not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /api/company/credentials:
+    get:
+      summary: List API credentials
+      description: List all API credentials for your company. Manage these in Settings -> Developer Options.
+      tags: [Company]
+      responses:
+        "200":
+          description: Credentials fetched
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiSuccess"
+  /api/company/credentials/rotate:
+    post:
+      summary: Get API credential
+      description: Generate a new `api_key` / `secret` pair. The secret is returned once and cannot be retrieved again. Previous credentials remain active until revoked.
+      tags: [Company]
+      responses:
+        "201":
+          description: New credential created
           content:
             application/json:
               schema:
                 allOf:
-                  - $ref: '#/components/schemas/ApiSuccess'
+                  - $ref: "#/components/schemas/ApiSuccess"
                   - type: object
                     properties:
                       data:
                         type: object
                         properties:
-                          require_approval:
-                            type: boolean
-                          approval_threshold:
-                            type: number
-                          auto_approve_below_threshold:
-                            type: boolean
-    put:
-      tags:
-        - Settings
-      summary: Update settings
-      description: Update company workflow settings
+                          credential_id:
+                            type: string
+                            format: uuid
+                          api_key:
+                            type: string
+                            example: a3f1c2d4e5b6a7f8c9d0e1f2
+                          secret:
+                            type: string
+                            description: Shown once only - store securely
+                          created_at:
+                            type: string
+                            format: date-time
+  /api/company/credentials/revoke:
+    post:
+      summary: Revoke API credential
+      description: Revoke an active API credential. Any ERP system using this key will immediately lose access.
+      tags: [Company]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [credential_id]
+              properties:
+                credential_id:
+                  type: string
+                  format: uuid
+      responses:
+        "200":
+          description: Credential revoked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiSuccess"
+        "404":
+          description: Credential not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /api/mappings/field-catalog:
+    get:
+      summary: List NRS invoice field catalog
+      description: Canonical NRS JSON field ids (mandatory/optional, descriptions) for building key mappings in Settings. Requires admin permission.
+      tags: [Mappings]
+      responses:
+        "200":
+          description: Catalog retrieved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiSuccess"
+  /api/mappings/value-options:
+    get:
+      summary: List NRS value options for a field
+      description: Returns allowed canonical values for value mapping. Query `field=invoice_type_code`, `field=invoice_kind`, `field=invoice_line.hsn_code` (HS / product codes on each line; legacy `field=hsn_code` is still accepted for options), `field=invoice_line.isic_code` (ISIC Rev.4 class codes on each line), `field=tax_total.tax_subtotal.tax_category.id` (tax category ids), `field=payment_means.payment_means_code` (UN/CEFACT payment means codes), `field={party}.postal_address.lga` where `{party}` is `accounting_customer_party`, `accounting_supplier_party`, `payee_party`, `bill_party`, `ship_party`, or `tax_representative_party` (Nigeria LGA codes); same party roots for `.postal_address.state` (state codes) and `.postal_address.country` (ISO 3166-1 alpha-2), `field=document_currency_code`, or `field=tax_currency_code`. Requires admin permission.
+      tags: [Mappings]
+      parameters:
+        - name: field
+          in: query
+          required: true
+          schema:
+            type: string
+            example: invoice_type_code
+      responses:
+        "200":
+          description: Options retrieved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiSuccess"
+  /api/mappings:
+    get:
+      summary: List field mappings
+      description: "List key and value mapping entries for the active set. Each row includes `mapping_kind`: `key` or `value`."
+      tags: [Mappings]
+      responses:
+        "200":
+          description: Mappings retrieved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiSuccess"
+  /api/mappings/entries:
+    post:
+      summary: Add field mapping
+      description: |
+        - **key** (default): `field` is the canonical NRS path; `from_value` is the ERP JSON key to move from. `to_value` optional, defaults to `field`.
+        - **value**: `mapping_kind` must be `value`; `field` must be a value-mappable field (e.g. `invoice_type_code`, `invoice_kind`, `invoice_line.hsn_code` for line HS codes, `invoice_line.isic_code` for line ISIC class codes, `tax_total.tax_subtotal.tax_category.id` for tax subtotals, `payment_means.payment_means_code` for each `payment_means[]` entry, `{party}.postal_address.lga` / `.state` / `.country` for `accounting_customer_party`, `accounting_supplier_party`, `payee_party`, `bill_party`, `ship_party`, or `tax_representative_party` (LGA, state, ISO alpha-2 country), `document_currency_code`, `tax_currency_code`); `from_value` is what the ERP sends; `to_value` is the required NRS value (see GET /api/mappings/value-options).
+
+        Requires admin permission.
+      tags: [Mappings]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [field, from_value]
+              properties:
+                mapping_kind:
+                  type: string
+                  enum: [key, value]
+                  description: Omit or `key` for JSON key rename; `value` for enum/code translation.
+                field:
+                  type: string
+                  description: Canonical NRS field path (key) or target field for value maps
+                  example: invoice_type_code
+                from_value:
+                  type: string
+                  description: ERP JSON key (key maps) or ERP-sent value to match (value maps)
+                  example: COMM_INV
+                to_value:
+                  type: string
+                  description: Required for value maps (NRS code). For key maps defaults to `field` when omitted.
+      responses:
+        "200":
+          description: Mapping saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiSuccess"
+        "400":
+          description: Missing fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /api/mappings/entries/{id}:
+    delete:
+      summary: Delete field mapping
+      description: Remove a mapping entry. Requires admin permission.
+      tags: [Mappings]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Mapping deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiSuccess"
+        "404":
+          description: Mapping not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /api/reports:
+    get:
+      summary: Get reports
+      description: Invoice statistics and trends for a date range.
+      tags: [Reports]
+      parameters:
+        - name: start_date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: end_date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+      responses:
+        "200":
+          description: Reports data retrieved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiSuccess"
+        "400":
+          description: Missing date parameters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /api/settings:
+    get:
+      summary: Get workflow settings
+      description: Get company workflow settings. Admin/manager only.
+      tags: [Settings]
+      responses:
+        "200":
+          description: Settings retrieved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiSuccess"
+        "403":
+          description: Insufficient permissions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+    post:
+      summary: Update workflow settings
+      description: Update company workflow settings. Admin/manager only.
+      tags: [Settings]
       requestBody:
         required: true
         content:
@@ -909,65 +2239,158 @@ paths:
                 auto_approve_below_threshold:
                   type: boolean
       responses:
-        '200':
+        "200":
           description: Settings updated
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ApiSuccess'
-
-  /api/reports/summary:
-    get:
-      tags:
-        - Reports
-      summary: Get summary report
-      description: Get invoice summary report
-      parameters:
-        - name: start_date
-          in: query
-          schema:
-            type: string
-            format: date
-        - name: end_date
-          in: query
-          schema:
-            type: string
-            format: date
-      responses:
-        '200':
-          description: Report generated
+                $ref: "#/components/schemas/ApiSuccess"
+        "403":
+          description: Insufficient permissions
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ApiSuccess'
-
+                $ref: "#/components/schemas/ApiError"
+  /api/settings/workflow:
+    get:
+      summary: Get workflow settings
+      description: Returns approval and auto-submit flags. Auto-submit runs after ERP/Excel ingest when validity is good and approval is not required.
+      tags: [Settings]
+      responses:
+        "200":
+          description: Workflow settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiSuccess"
+        "403":
+          description: Insufficient permissions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /api/settings/workflow/approval-required:
+    put:
+      summary: Set require approval before NRS
+      tags: [Settings]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled:
+                  type: boolean
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiSuccess"
+        "400":
+          description: Invalid body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /api/settings/workflow/auto-submit-valid-invoices:
+    put:
+      summary: Set auto-submit valid invoices to NRS
+      description: When enabled, createInvoice (ERP ingest and Excel upload) triggers NRS submission after validity_status is good, unless approval is required.
+      tags: [Settings]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled:
+                  type: boolean
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiSuccess"
+        "400":
+          description: Invalid body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
   /api/users:
     get:
-      tags:
-        - Authentication
       summary: List users
-      description: Get all users in company (admin only)
+      description: Get all users in your company. Admin/manager only.
+      tags: [Users]
       responses:
-        '200':
+        "200":
           description: Users retrieved
           content:
             application/json:
               schema:
-                allOf:
-                  - $ref: '#/components/schemas/ApiSuccess'
-                  - type: object
-                    properties:
-                      data:
-                        type: array
-                        items:
-                          $ref: '#/components/schemas/User'
-
-  /api/users/{id}/permissions:
+                $ref: "#/components/schemas/ApiSuccess"
+        "403":
+          description: Insufficient permissions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+    post:
+      summary: Create user
+      description: Create a new user in your company. Admin only.
+      tags: [Users]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, email, password]
+              properties:
+                fullName:
+                  type: string
+                username:
+                  type: string
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  minLength: 8
+                role:
+                  type: string
+                  enum: [admin, manager, user, viewer]
+                  default: user
+      responses:
+        "201":
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiSuccess"
+        "403":
+          description: Insufficient permissions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "409":
+          description: User already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /api/users/{id}:
     get:
-      tags:
-        - Authentication
-      summary: Get user permissions
-      description: Get permissions for specific user
+      summary: Get user by ID
+      tags: [Users]
       parameters:
         - name: id
           in: path
@@ -976,17 +2399,21 @@ paths:
             type: string
             format: uuid
       responses:
-        '200':
-          description: Permissions retrieved
+        "200":
+          description: User retrieved
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ApiSuccess'
-    put:
-      tags:
-        - Authentication
-      summary: Update user permissions
-      description: Update permissions for specific user (admin only)
+                $ref: "#/components/schemas/ApiSuccess"
+        "404":
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+    patch:
+      summary: Update user
+      tags: [Users]
       parameters:
         - name: id
           in: path
@@ -1001,15 +2428,87 @@ paths:
             schema:
               type: object
               properties:
+                full_name:
+                  type: string
+                email:
+                  type: string
+                  format: email
+                role:
+                  type: string
+                  enum: [admin, manager, user, viewer]
+                is_active:
+                  type: boolean
+      responses:
+        "200":
+          description: User updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiSuccess"
+        "404":
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /api/users/{id}/permissions:
+    get:
+      summary: Get user permissions
+      tags: [Users]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Permissions retrieved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiSuccess"
+    put:
+      summary: Update user permissions
+      description: Update a user's permissions. Admin only.
+      tags: [Users]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [permissions]
+              properties:
                 permissions:
                   type: array
                   items:
-                    type: string
-                    enum: [view, submit, approve]
+                    type: object
+                    required: [permission_name]
+                    properties:
+                      permission_name:
+                        type: string
+                        example: invoices
+                      can_create:
+                        type: boolean
+                      can_read:
+                        type: boolean
+                      can_update:
+                        type: boolean
+                      can_delete:
+                        type: boolean
       responses:
-        '200':
+        "200":
           description: Permissions updated
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ApiSuccess'
+                $ref: "#/components/schemas/ApiSuccess"
